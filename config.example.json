@@ -6,12 +6,6 @@
   "notify": {
     "mode": "none",
     "command": [],
-    "webhookUrl": "",
-    "qwenpaw": {
-      "agentId": "default",
-      "channel": "",
-      "targetUser": "",
-      "targetSession": ""
-    }
+    "webhookUrl": ""
   }
 }
