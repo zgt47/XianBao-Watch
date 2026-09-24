@@ -8,6 +8,8 @@ import signal
 import subprocess
 import sys
 import time
+import socket
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -230,6 +232,66 @@ def disable_notify():
     return 0
 
 
+HTTP_ERROR_HINTS = {
+    400: "请求格式不正确",
+    401: "访问需要认证或认证已失效",
+    403: "访问被拒绝，可能被权限或安全规则拦截",
+    404: "检测地址不存在，可能地址已失效或填写错误",
+    408: "服务器等待请求超时",
+    429: "请求过于频繁，被对方限流",
+    500: "源站程序内部错误",
+    502: "网关无法从源站获得正常响应",
+    503: "服务暂时不可用",
+    504: "网关等待源站响应超时",
+    520: "反向代理收到源站异常响应",
+    521: "源站拒绝连接或源站服务未启动",
+    522: "反向代理连接源站超时",
+    523: "反向代理无法找到或连接源站",
+    524: "已连接源站，但等待源站响应超时",
+    525: "SSL 握手失败",
+    526: "源站 SSL 证书无效",
+    530: "公网入口无法正常连接或解析到源站，常见于 Cloudflare Tunnel、DNS 或源站连接异常",
+}
+
+
+def friendly_error(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        code = int(getattr(exc, "code", 0) or 0)
+        hint = HTTP_ERROR_HINTS.get(code)
+        if hint:
+            return f"HTTP {code}：{hint}"
+        return f"HTTP {code}：服务器返回异常状态"
+
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+
+        if isinstance(reason, socket.timeout):
+            return "连接超时：在规定时间内没有收到服务器响应"
+
+        if isinstance(reason, socket.gaierror):
+            return "域名解析失败：无法把域名解析为可访问地址"
+
+        if isinstance(reason, ConnectionRefusedError):
+            return "连接被拒绝：目标地址可以找到，但服务没有接受连接"
+
+        if isinstance(reason, TimeoutError):
+            return "连接超时：在规定时间内没有收到服务器响应"
+
+        text = str(reason or "").strip()
+        if text:
+            return f"网络连接失败：{text}"
+        return "网络连接失败：无法访问检测地址"
+
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "连接超时：在规定时间内没有收到服务器响应"
+
+    text = str(exc or "").strip()
+    if text:
+        return text.replace("<none>", "").strip().rstrip(":").strip()
+
+    return "未知网络错误"
+
+
 def fetch_alive(url, timeout):
     req = urllib.request.Request(
         url,
@@ -293,7 +355,7 @@ def perform_check():
 
     except Exception as exc:
         state["failures"] = int(state.get("failures") or 0) + 1
-        state["lastError"] = str(exc)
+        state["lastError"] = friendly_error(exc)
         threshold = cfg["failThreshold"]
 
         if state["failures"] >= threshold and not state["alerting"]:
