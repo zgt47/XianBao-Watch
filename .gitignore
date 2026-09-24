@@ -1,4 +1,6 @@
 config.json
 state.json
+xianbao_watch.pid
+xianbao_watch.log
 __pycache__/
 *.pyc
