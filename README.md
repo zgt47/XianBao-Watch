@@ -1,8 +1,71 @@
 # XianBao-Watch
 
-用于 **XianBao-Lite** 的外部存活监控 Skill。
+**给 XianBao-Lite 配套使用的外部存活监控 Skill。**
 
-适合部署在 **QwenPaw / AgentScope 等托管 Agent** 中：Agent 不需要拥有 VPS，也不需要开放端口。它只需要定时运行本仓库里的监控脚本，主动访问 XianBao-Lite 提供的 `/alive/...` 地址。
+适合 **QwenPaw / AgentScope / 其他托管 Agent**：不需要拥有 VPS，不需要开放额外端口。Agent 只需定时运行脚本，主动访问 XianBao-Lite 的 `/alive/...` 检测地址。
+
+## 给 Agent：看到这里后直接这样做
+
+如果你是 Agent，并且用户让你“安装 XianBao-Watch”或“监控 XianBao-Lite”，请按下面顺序执行：
+
+```bash
+git clone https://github.com/zgt47/XianBao-Watch.git
+cd XianBao-Watch
+```
+
+如果目录已经存在：
+
+```bash
+cd XianBao-Watch
+git pull --ff-only
+```
+
+然后读取本仓库的：
+
+```text
+SKILL.md
+```
+
+并严格按照其中的调用规则执行。
+
+用户随后会给你一个完整的 XianBao 检测地址，例如：
+
+```text
+https://xb.example.com/alive/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+收到后执行：
+
+```bash
+python xianbao_watch.py set-url "用户提供的完整检测地址"
+```
+
+之后进行一次测试：
+
+```bash
+python xianbao_watch.py check
+```
+
+如果输出 `OK`，说明适配成功。
+
+## Agent 最简调用规则
+
+建议每 **90 秒**执行一次：
+
+```bash
+python xianbao_watch.py check
+```
+
+根据脚本输出处理：
+
+| 输出 | Agent 应做什么 |
+|---|---|
+| `OK` | 完全静默，不通知用户 |
+| `ALERT|...` | 将后面的内容作为故障通知发送一次 |
+| `RECOVERED|...` | 将后面的内容作为恢复通知发送一次 |
+| `ERROR|...` | 通知用户监控 Skill 配置异常 |
+
+**不要让大模型自己重新计算失败次数。** 连续失败、是否已经报警、恢复状态都由脚本保存。
 
 ## 工作方式
 
@@ -14,86 +77,29 @@ QwenPaw / Agent
 xianbao_watch.py check
       │
       ├─ 正常 → OK → 保持静默
-      ├─ 连续失败达到阈值 → ALERT → Agent 通知用户
-      └─ 故障后恢复 → RECOVERED → Agent 通知用户
+      ├─ 连续失败达到阈值 → ALERT → Agent 通知用户一次
+      └─ 故障后恢复 → RECOVERED → Agent 通知用户一次
 ```
 
-脚本自己保存连续失败次数和报警状态，Agent 不需要每次重新推理。
+## 第一次配置 / 更换 XianBao 地址
 
-## 给 Agent 的安装说明
-
-如果你是 Agent，请执行：
-
-```bash
-git clone https://github.com/zgt47/XianBao-Watch.git
-cd XianBao-Watch
-```
-
-然后阅读：
-
-```text
-SKILL.md
-```
-
-并按照其中的调用规则执行。
-
-如果当前环境已经存在本仓库，则使用：
-
-```bash
-git pull --ff-only
-```
-
-更新即可。
-
-> 不要覆盖或删除本地运行生成的 `config.json` 和 `state.json`。
-
-## 第一次配置 XianBao 地址
-
-用户会从 XianBao-Lite：
+用户从 XianBao-Lite：
 
 ```text
 运行状态 → 运行设置 → 外部存活检测
 ```
 
-复制完整检测地址，例如：
+复制完整检测地址。
 
-```text
-https://xb.example.com/alive/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-然后执行：
+设置地址：
 
 ```bash
-python xianbao_watch.py set-url "https://xb.example.com/alive/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+python xianbao_watch.py set-url "https://你的域名/alive/xxxxxxxx"
 ```
 
-以后检测地址变化时，只需要再次执行 `set-url`，无需修改源码。
+以后用户重新生成了检测地址，只需要再次执行一次 `set-url`，**不需要修改脚本**。
 
-## 手动检查
-
-```bash
-python xianbao_watch.py check
-```
-
-正常：
-
-```text
-OK
-```
-
-连续失败达到阈值：
-
-```text
-ALERT|XianBao-Lite 已连续 3 次无法访问|最后成功时间 ...
-```
-
-故障后恢复：
-
-```text
-RECOVERED|XianBao-Lite 已恢复|...
-```
-
-## 查看配置
+## 查看当前配置
 
 ```bash
 python xianbao_watch.py show
@@ -101,7 +107,7 @@ python xianbao_watch.py show
 
 ## 修改参数
 
-连续失败次数：
+连续失败多少次报警：
 
 ```bash
 python xianbao_watch.py set-threshold 3
@@ -113,10 +119,26 @@ python xianbao_watch.py set-threshold 3
 python xianbao_watch.py set-timeout 10
 ```
 
-默认值：
+默认：
 
 - 请求超时：10 秒
 - 连续失败阈值：3 次
-- 建议定时周期：90 秒
+- 推荐检测周期：90 秒
 
-详细调用规则见 [SKILL.md](./SKILL.md)。
+## 运行文件
+
+脚本运行后会在本地生成：
+
+```text
+config.json
+state.json
+```
+
+其中：
+
+- `config.json`：保存 XianBao 检测地址、超时、失败阈值。
+- `state.json`：保存连续失败次数、报警状态、最近成功时间和 seq。
+
+它们已经加入 `.gitignore`。以后执行 `git pull` 更新 Skill 时，不会覆盖用户已经设置好的检测地址和运行状态。
+
+详细调用协议见 [SKILL.md](./SKILL.md)。
