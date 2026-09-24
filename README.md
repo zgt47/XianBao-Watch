@@ -1,12 +1,21 @@
 # XianBao-Watch
 
-**给 XianBao-Lite 配套使用的外部存活监控 Skill。**
+**给 XianBao-Lite 配套使用的低消耗外部存活监控脚本。**
 
-适合 **QwenPaw / AgentScope / 其他托管 Agent**：不需要拥有 VPS，不需要开放额外端口。Agent 只需定时运行脚本，主动访问 XianBao-Lite 的 `/alive/...` 检测地址。
+它的核心原则是：
 
-## 给 Agent：看到这里后直接这样做
+> **正常巡检完全不调用 Agent / 大模型。**
+>
+> XianBao-Watch 自己在后台每 60 秒访问一次 XianBao-Lite 的 `/alive/...` 检测地址。
+> 只有连续异常达到阈值，或故障恢复时，才通过 QwenPaw 的消息通道直接给用户推送消息。
 
-如果你是 Agent，并且用户让你“安装 XianBao-Watch”或“监控 XianBao-Lite”，请按下面顺序执行：
+因此不要使用 QwenPaw Heartbeat 来每分钟询问大模型。
+
+## 给 Agent：安装时这样做
+
+当用户要求“安装 XianBao-Watch”或“监控 XianBao-Lite”时，只在**首次安装和配置**阶段执行下面步骤。
+
+### 1. 下载 / 更新
 
 ```bash
 git clone https://github.com/zgt47/XianBao-Watch.git
@@ -20,125 +29,218 @@ cd XianBao-Watch
 git pull --ff-only
 ```
 
-然后读取本仓库的：
+然后读取本仓库的 `SKILL.md`。
 
-```text
-SKILL.md
-```
+### 2. 配置 XianBao 检测地址
 
-并严格按照其中的调用规则执行。
-
-用户随后会给你一个完整的 XianBao 检测地址，例如：
+用户会提供完整地址，例如：
 
 ```text
 https://xb.example.com/alive/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-收到后执行：
+执行：
 
 ```bash
 python xianbao_watch.py set-url "用户提供的完整检测地址"
 ```
 
-之后进行一次测试：
+### 3. 找到当前 QwenPaw 聊天目标
+
+先查询用户当前使用的聊天会话：
+
+```bash
+qwenpaw chats list --agent-id <当前AgentID> --channel <当前渠道>
+```
+
+不要猜 `target-user` 或 `target-session`。
+
+取用户当前实际使用的：
+
+- Agent ID
+- channel
+- user_id
+- session_id
+
+然后写入 XianBao-Watch：
+
+```bash
+python xianbao_watch.py set-qwenpaw "<agent-id>" "<channel>" "<target-user>" "<target-session>"
+```
+
+这里配置的只是 **QwenPaw 消息直推通道**，不是让 Agent 大模型参与巡检。
+
+### 4. 测试
+
+先测试 XianBao：
 
 ```bash
 python xianbao_watch.py check
 ```
 
-如果输出 `OK`，说明适配成功。
+正常应输出：
 
-## Agent 最简调用规则
+```text
+OK
+```
 
-建议每 **90 秒**执行一次：
+再测试消息直推：
 
 ```bash
-python xianbao_watch.py check
+python xianbao_watch.py notify-test
 ```
 
-根据脚本输出处理：
+用户收到测试消息后即可启动后台监控。
 
-| 输出 | Agent 应做什么 |
-|---|---|
-| `OK` | 完全静默，不通知用户 |
-| `ALERT|...` | 将后面的内容作为故障通知发送一次 |
-| `RECOVERED|...` | 将后面的内容作为恢复通知发送一次 |
-| `ERROR|...` | 通知用户监控 Skill 配置异常 |
+### 5. 启动后台监控
 
-**不要让大模型自己重新计算失败次数。** 连续失败、是否已经报警、恢复状态都由脚本保存。
+```bash
+python xianbao_watch.py start
+```
 
-## 工作方式
+查看状态：
+
+```bash
+python xianbao_watch.py status
+```
+
+以后 **不要创建 QwenPaw Heartbeat，不要创建 Agent 类型定时任务，也不要每 60 秒唤醒大模型**。
+
+## 实际工作方式
 
 ```text
-QwenPaw / Agent
-      │
-      │ 每 90 秒执行一次
-      ▼
-xianbao_watch.py check
-      │
-      ├─ 正常 → OK → 保持静默
-      ├─ 连续失败达到阈值 → ALERT → Agent 通知用户一次
-      └─ 故障后恢复 → RECOVERED → Agent 通知用户一次
+XianBao-Watch 后台普通 Python 进程
+        │
+        │ 每 60 秒
+        ▼
+访问 XianBao-Lite /alive/随机密钥
+        │
+        ├─ 正常
+        │    └─ 什么都不做
+        │       不调用 Agent
+        │       不调用模型
+        │       不发消息
+        │
+        ├─ 连续失败 1 次
+        │    └─ 静默
+        │
+        ├─ 连续失败 2 次
+        │    └─ 静默
+        │
+        ├─ 连续失败 3 次
+        │    └─ qwenpaw channels send
+        │       直接推送故障消息
+        │
+        └─ 故障后恢复
+             └─ qwenpaw channels send
+                直接推送恢复消息
 ```
 
-## 第一次配置 / 更换 XianBao 地址
+默认参数：
 
-用户从 XianBao-Lite：
+- 检测间隔：60 秒
+- 请求超时：10 秒
+- 连续失败阈值：3 次
+- 正常状态：完全静默
+- 持续故障：只通知首次故障，不重复轰炸
+- 恢复：通知一次
 
-```text
-运行状态 → 运行设置 → 外部存活检测
+## 为什么不使用 QwenPaw Heartbeat
+
+QwenPaw Heartbeat 的作用是按周期把 `HEARTBEAT.md` 当成用户消息交给 Agent 执行。
+
+这意味着如果拿它做 60 秒一次的存活检查，大模型也会被周期性唤醒，不符合本项目“正常运行零模型巡检”的目标。
+
+本项目只借用：
+
+```bash
+qwenpaw channels send
 ```
 
-复制完整检测地址。
+作为消息发送出口。
 
-设置地址：
+它是单向消息推送，不需要先让大模型分析 XianBao 状态。
+
+## XianBao 本身有没有 60 秒心跳
+
+当前 XianBao-Lite 的 `/alive/...` 是**被动检测接口**。
+
+它不是每 60 秒主动向外发送一次心跳。
+
+谁访问它，它就立即返回：
+
+```json
+{
+  "alive": true,
+  "seq": 138,
+  "time": "2026-09-24T12:00:00+08:00"
+}
+```
+
+所以现在只有 **XianBao-Watch 自己的 60 秒巡检周期**，不存在两个心跳周期需要互相匹配。
+
+## 常用命令
+
+修改检测地址：
 
 ```bash
 python xianbao_watch.py set-url "https://你的域名/alive/xxxxxxxx"
 ```
 
-以后用户重新生成了检测地址，只需要再次执行一次 `set-url`，**不需要修改脚本**。
-
-## 查看当前配置
+修改检测间隔：
 
 ```bash
-python xianbao_watch.py show
+python xianbao_watch.py set-interval 60
 ```
 
-## 修改参数
-
-连续失败多少次报警：
+修改连续失败阈值：
 
 ```bash
 python xianbao_watch.py set-threshold 3
 ```
 
-请求超时：
+修改请求超时：
 
 ```bash
 python xianbao_watch.py set-timeout 10
 ```
 
-默认：
+查看完整状态：
 
-- 请求超时：10 秒
-- 连续失败阈值：3 次
-- 推荐检测周期：90 秒
+```bash
+python xianbao_watch.py show
+```
 
-## 运行文件
+停止后台监控：
 
-脚本运行后会在本地生成：
+```bash
+python xianbao_watch.py stop
+```
+
+重新启动：
+
+```bash
+python xianbao_watch.py start
+```
+
+## 本地运行文件
+
+脚本会在目录内生成：
 
 ```text
 config.json
 state.json
+xianbao_watch.pid
+xianbao_watch.log
 ```
 
 其中：
 
-- `config.json`：保存 XianBao 检测地址、超时、失败阈值。
-- `state.json`：保存连续失败次数、报警状态、最近成功时间和 seq。
+- `config.json`：检测地址、间隔、阈值以及 QwenPaw 消息直推参数。
+- `state.json`：连续失败次数、报警状态、最近成功时间等。
+- `xianbao_watch.pid`：后台进程编号。
+- `xianbao_watch.log`：只记录后台启动、异常通知和通知失败等必要信息。
 
-它们已经加入 `.gitignore`。以后执行 `git pull` 更新 Skill 时，不会覆盖用户已经设置好的检测地址和运行状态。
+这些运行文件不会提交到 GitHub。
 
-详细调用协议见 [SKILL.md](./SKILL.md)。
+详细 Agent 安装规则见 [SKILL.md](./SKILL.md)。
