@@ -46,13 +46,15 @@ OK
 
 ## 配置消息出口
 
-XianBao-Watch 不规定使用哪个聊天平台。
+XianBao-Watch 支持同时使用多路通知。
 
-只需要提供一种能直接发送消息的方法。
+原消息出口可以使用“命令”或“Webhook”其中一种；企业微信应用可以作为独立的第二路通知。
 
-### 命令方式
+异常或恢复时，两路都会尝试发送。只要任意一路成功，就认为本次消息已经送达；如果全部失败，脚本会继续重试。
 
-如果当前环境有发送消息的命令：
+### 原消息出口：命令方式
+
+如果当前环境有直接发送消息的命令：
 
 ```bash
 python xianbao_watch.py set-command <命令> <参数...> "{message}"
@@ -60,7 +62,7 @@ python xianbao_watch.py set-command <命令> <参数...> "{message}"
 
 `{message}` 会自动替换成异常或恢复内容。
 
-### Webhook 方式
+### 原消息出口：Webhook 方式
 
 如果有 Webhook：
 
@@ -74,11 +76,52 @@ python xianbao_watch.py set-webhook "https://你的Webhook地址"
 {"text":"消息正文"}
 ```
 
-配置完成后测试：
+### 企业微信应用
+
+企业微信应用是一条独立外部通知链路。即使原来的 TG、聊天机器人或其他消息出口失效，企业微信仍会单独尝试发送。
+
+需要：
+
+- 企业 ID
+- 应用 AgentID
+- 应用 Secret
+- 接收成员，可选；默认 `@all`，即应用可见范围内全部成员
+
+配置：
+
+```bash
+python xianbao_watch.py set-wecom-app "<企业ID>" "<应用AgentID>" "<应用Secret>"
+```
+
+如果只想发送给某个企业微信成员，可再加成员账号：
+
+```bash
+python xianbao_watch.py set-wecom-app "<企业ID>" "<应用AgentID>" "<应用Secret>" "<成员账号>"
+```
+
+如果你已经在 XianBao-Lite 里配置过“企业微信应用”，可以直接使用同一套企业 ID、AgentID 和 Secret。
+
+关闭企业微信应用通知：
+
+```bash
+python xianbao_watch.py disable-wecom-app
+```
+
+## 测试通知
+
+配置完成后：
 
 ```bash
 python xianbao_watch.py notify-test
 ```
+
+测试结果会显示每一路是否成功，例如：
+
+```text
+SENT|测试消息已发送|原消息出口:成功；企业微信应用:成功
+```
+
+如果原消息出口失败、企业微信成功，也会视为测试消息已成功送达。
 
 ## 启动
 
