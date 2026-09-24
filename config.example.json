@@ -1,5 +1,13 @@
 {
   "url": "",
   "timeout": 10,
-  "failThreshold": 3
+  "failThreshold": 3,
+  "intervalSeconds": 60,
+  "notify": {
+    "mode": "qwenpaw",
+    "agentId": "default",
+    "channel": "",
+    "targetUser": "",
+    "targetSession": ""
+  }
 }
