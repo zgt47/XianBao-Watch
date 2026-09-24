@@ -21,6 +21,7 @@ STATE = BASE / "state.json"
 PID_FILE = BASE / "xianbao_watch.pid"
 LOG_FILE = BASE / "xianbao_watch.log"
 CN = timezone(timedelta(hours=8))
+WECOM_TOKEN_CACHE = {}
 
 DEFAULT_CONFIG = {
     "url": "",
@@ -510,6 +511,71 @@ def request_json(url, payload=None, timeout=15):
         raise RuntimeError("接口返回内容不是有效 JSON") from exc
 
 
+def get_wecom_access_token(config, force=False):
+    corp_id = str(config.get("corpId") or "").strip()
+    agent_id = str(config.get("agentId") or "").strip()
+    secret = str(config.get("secret") or "").strip()
+    api_base = str(config.get("apiBase") or "https://qyapi.weixin.qq.com").strip().rstrip("/")
+
+    cache_key = f"{corp_id}|{agent_id}"
+    now = time.time()
+    cached = WECOM_TOKEN_CACHE.get(cache_key) or {}
+
+    if (
+        not force
+        and cached.get("token")
+        and float(cached.get("expiresAt") or 0) > now
+    ):
+        return str(cached["token"])
+
+    token_url = (
+        f"{api_base}/cgi-bin/gettoken?"
+        + urllib.parse.urlencode({"corpid": corp_id, "corpsecret": secret})
+    )
+    token_data = request_json(token_url, timeout=15)
+
+    if int(token_data.get("errcode") or 0) != 0:
+        raise RuntimeError(
+            f"获取凭证失败：{token_data.get('errcode')} "
+            f"{token_data.get('errmsg') or ''}".strip()
+        )
+
+    access_token = str(token_data.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("获取凭证失败：没有返回 access_token")
+
+    expires_in = int(token_data.get("expires_in") or 7200)
+    WECOM_TOKEN_CACHE[cache_key] = {
+        "token": access_token,
+        "expiresAt": now + max(60, expires_in - 300)
+    }
+    return access_token
+
+
+def send_wecom_app_once(message, config, access_token):
+    agent_id = str(config.get("agentId") or "").strip()
+    to_user = str(config.get("toUser") or "@all").strip() or "@all"
+    api_base = str(config.get("apiBase") or "https://qyapi.weixin.qq.com").strip().rstrip("/")
+
+    send_url = (
+        f"{api_base}/cgi-bin/message/send?"
+        + urllib.parse.urlencode({"access_token": access_token})
+    )
+    agent_value = int(agent_id) if agent_id.isdigit() else agent_id
+
+    return request_json(
+        send_url,
+        {
+            "touser": to_user,
+            "agentid": agent_value,
+            "msgtype": "text",
+            "text": {"content": message},
+            "safe": 0
+        },
+        timeout=15
+    )
+
+
 def run_wecom_app_notify(message, config):
     if not config.get("enabled"):
         return False, "企业微信应用未启用"
@@ -517,47 +583,21 @@ def run_wecom_app_notify(message, config):
     corp_id = str(config.get("corpId") or "").strip()
     agent_id = str(config.get("agentId") or "").strip()
     secret = str(config.get("secret") or "").strip()
-    to_user = str(config.get("toUser") or "@all").strip() or "@all"
-    api_base = str(config.get("apiBase") or "https://qyapi.weixin.qq.com").strip().rstrip("/")
 
     if not corp_id or not agent_id or not secret:
         return False, "企业微信应用参数不完整"
 
     try:
-        token_url = (
-            f"{api_base}/cgi-bin/gettoken?"
-            + urllib.parse.urlencode({"corpid": corp_id, "corpsecret": secret})
-        )
-        token_data = request_json(token_url, timeout=15)
+        access_token = get_wecom_access_token(config)
+        send_data = send_wecom_app_once(message, config, access_token)
+        errcode = int(send_data.get("errcode") or 0)
 
-        if int(token_data.get("errcode") or 0) != 0:
-            return False, (
-                f"企业微信获取凭证失败："
-                f"{token_data.get('errcode')} {token_data.get('errmsg') or ''}"
-            ).strip()
+        if errcode in (40014, 42001):
+            access_token = get_wecom_access_token(config, force=True)
+            send_data = send_wecom_app_once(message, config, access_token)
+            errcode = int(send_data.get("errcode") or 0)
 
-        access_token = str(token_data.get("access_token") or "").strip()
-        if not access_token:
-            return False, "企业微信获取凭证失败：没有返回 access_token"
-
-        send_url = (
-            f"{api_base}/cgi-bin/message/send?"
-            + urllib.parse.urlencode({"access_token": access_token})
-        )
-        agent_value = int(agent_id) if agent_id.isdigit() else agent_id
-        send_data = request_json(
-            send_url,
-            {
-                "touser": to_user,
-                "agentid": agent_value,
-                "msgtype": "text",
-                "text": {"content": message},
-                "safe": 0
-            },
-            timeout=15
-        )
-
-        if int(send_data.get("errcode") or 0) == 0:
+        if errcode == 0:
             return True, ""
 
         return False, (
@@ -779,9 +819,15 @@ def stop_daemon():
 
 def show():
     pid = read_pid()
+    cfg = load_config()
+    safe_cfg = deep_merge({}, cfg)
+
+    wecom = safe_cfg.get("notify", {}).get("wecomApp", {})
+    if wecom.get("secret"):
+        wecom["secret"] = "***已配置***"
 
     print(json.dumps({
-        "config": load_config(),
+        "config": safe_cfg,
         "state": load_state(),
         "daemon": {
             "running": pid_running(pid),
