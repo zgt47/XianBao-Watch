@@ -2,20 +2,11 @@
 
 ## 目标
 
-监控 XianBao-Lite 的公网存活检测地址。
+监控 XianBao-Lite 的公网存活检测地址，并把“是否需要通知用户”的判断交给脚本状态机，而不是交给大模型反复推理。
 
-这个 Skill 负责确定：
+## Agent 安装流程
 
-- XianBao 是否还能被公网访问；
-- 是否已经连续失败达到报警阈值；
-- 故障状态是否已经通知过；
-- 故障后是否恢复。
-
-这些状态由脚本维护，不要让大模型自行重新计算。
-
-## 安装
-
-如果本目录还不存在：
+当用户要求安装本 Skill 时：
 
 ```bash
 git clone https://github.com/zgt47/XianBao-Watch.git
@@ -31,126 +22,150 @@ git pull --ff-only
 
 更新时不得删除本地 `config.json` 和 `state.json`。
 
-## 配置检测地址
+## 用户提供检测地址后
 
-用户提供 XianBao-Lite 的完整检测地址后，执行：
-
-```bash
-python xianbao_watch.py set-url "用户提供的完整检测地址"
-```
-
-例如：
+执行：
 
 ```bash
-python xianbao_watch.py set-url "https://xb.example.com/alive/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+python xianbao_watch.py set-url "用户提供的完整 XianBao 检测地址"
 ```
 
-如果用户以后重新生成了 XianBao 检测地址，再执行一次 `set-url` 即可。
-
-不要把用户真实检测地址写回 GitHub 仓库。
-
-## 周期检测
-
-建议每 90 秒执行一次：
+随后立刻测试一次：
 
 ```bash
 python xianbao_watch.py check
 ```
 
-### 输出处理规则
+若输出 `OK`，安装和地址配置完成。
 
-#### 1. 输出 `OK`
+如果用户以后重新生成 XianBao 检测地址，只需要再次执行 `set-url`。
 
-保持静默。
+不要把用户真实检测地址提交回 GitHub。
 
-不要：
+## 周期调用
 
-- 给用户发送“运行正常”；
-- 生成冗长总结；
-- 重置状态文件。
+推荐每 90 秒执行一次：
 
-#### 2. 输出以 `ALERT|` 开头
+```bash
+python xianbao_watch.py check
+```
 
-这是首次进入故障状态。
+## 输出处理协议
 
-把 `ALERT|` 后面的内容作为故障信息通知用户。
+### `OK`
 
-脚本已经负责防止重复报警；不要自行再次累计失败次数。
+表示当前检测正常，或者失败次数尚未达到报警阈值。
 
-#### 3. 输出以 `RECOVERED|` 开头
+Agent 必须：
 
-这是故障后的首次恢复。
+- 保持静默；
+- 不给用户发送“运行正常”；
+- 不生成周期性总结；
+- 不自行修改失败次数；
+- 不清空状态文件。
 
-把 `RECOVERED|` 后面的内容作为恢复通知发送给用户。
+### `ALERT|...`
 
-#### 4. 输出以 `ERROR|` 开头
+表示首次达到连续失败阈值。
 
-表示监控 Skill 本身配置不完整或命令错误。
+Agent 必须：
 
-通知用户需要检查 XianBao-Watch 配置。
+- 将 `ALERT|` 后面的文字作为故障信息通知用户一次；
+- 不自行再次累计失败次数；
+- 后续如果脚本继续返回 `OK`，仍然保持静默。
 
-## 脚本状态
+脚本会自行保存“已经报警”的状态，因此持续故障不会重复返回 ALERT。
 
-脚本运行时会自动生成：
+### `RECOVERED|...`
+
+表示之前处于故障报警状态，现在首次恢复。
+
+Agent 必须：
+
+- 将 `RECOVERED|` 后面的文字作为恢复通知发送用户一次；
+- 之后恢复正常静默检测。
+
+### `ERROR|...`
+
+表示 Skill 本身没有完成配置，或命令调用错误。
+
+Agent 应通知用户需要检查 XianBao-Watch 配置。
+
+## 状态文件
+
+脚本运行时自动生成：
 
 ```text
 config.json
 state.json
 ```
 
-其中：
+`config.json` 保存：
 
-- `config.json` 保存检测地址、请求超时、失败阈值；
-- `state.json` 保存连续失败次数、报警状态、最近一次成功时间和 seq。
+- XianBao 检测地址
+- 请求超时
+- 连续失败报警阈值
 
-这两个文件是运行状态，不应提交到 GitHub，也不要在普通更新时删除。
+`state.json` 保存：
 
-## 可用命令
+- 连续失败次数
+- 是否已经进入报警状态
+- 最近一次成功时间
+- 最近一次 seq
+- 最近错误
 
-设置或更换检测地址：
+这些状态由脚本维护，Agent 不要自行重写。
+
+## 可调用命令
+
+设置或更换地址：
 
 ```bash
 python xianbao_watch.py set-url "https://.../alive/..."
 ```
 
-检查一次：
+检查：
 
 ```bash
 python xianbao_watch.py check
 ```
 
-查看配置和当前状态：
+查看状态：
 
 ```bash
 python xianbao_watch.py show
 ```
 
-修改连续失败阈值：
+修改失败阈值：
 
 ```bash
 python xianbao_watch.py set-threshold 3
 ```
 
-修改请求超时：
+修改超时：
 
 ```bash
 python xianbao_watch.py set-timeout 10
 ```
 
-仅在用户明确要求时重置监控状态：
+仅在用户明确要求时重置：
 
 ```bash
 python xianbao_watch.py reset
 ```
 
-## 定时任务调用模板
+## Heartbeat / Scheduled Task 调用模板
 
-如果 Agent 支持 Heartbeat / Scheduled Task，任务内容保持简单：
+如果平台支持 Heartbeat 或定时任务，任务内容保持简单：
 
 ```text
 进入 XianBao-Watch 目录，执行 python xianbao_watch.py check。
-严格按照 SKILL.md 的输出处理规则处理结果。
-OK 时保持静默；ALERT 时通知故障；RECOVERED 时通知恢复；ERROR 时通知配置异常。
+严格按照 SKILL.md 的输出协议处理：
+OK 静默；
+ALERT 通知故障；
+RECOVERED 通知恢复；
+ERROR 通知配置异常。
+不要自行重新判断连续失败次数。
 ```
 
-不要让 Heartbeat 每次重新分析 XianBao 状态，判断工作已经由脚本完成。
+判断工作已经由脚本完成，不需要每次让大模型重新分析 XianBao 状态。
