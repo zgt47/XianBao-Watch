@@ -27,15 +27,10 @@ DEFAULT_CONFIG = {
     "notify": {
         "mode": "none",
         "command": [],
-        "webhookUrl": "",
-        "qwenpaw": {
-            "agentId": "default",
-            "channel": "",
-            "targetUser": "",
-            "targetSession": ""
-        }
+        "webhookUrl": ""
     }
 }
+
 DEFAULT_STATE = {
     "failures": 0,
     "alerting": False,
@@ -81,14 +76,17 @@ def save(path, obj):
 def load_config():
     cfg = load(CONFIG, DEFAULT_CONFIG)
     cfg["url"] = str(cfg.get("url") or "").strip()
+
     try:
         cfg["timeout"] = max(2, min(60, int(cfg.get("timeout") or 10)))
     except Exception:
         cfg["timeout"] = 10
+
     try:
         cfg["failThreshold"] = max(1, min(20, int(cfg.get("failThreshold") or 3)))
     except Exception:
         cfg["failThreshold"] = 3
+
     try:
         cfg["intervalSeconds"] = max(10, min(3600, int(cfg.get("intervalSeconds") or 60)))
     except Exception:
@@ -97,13 +95,11 @@ def load_config():
     notify = deep_merge(DEFAULT_CONFIG["notify"], cfg.get("notify") or {})
     notify["mode"] = str(notify.get("mode") or "none").strip().lower()
     notify["webhookUrl"] = str(notify.get("webhookUrl") or "").strip()
+
     if not isinstance(notify.get("command"), list):
         notify["command"] = []
     notify["command"] = [str(x) for x in notify["command"]]
-    q = deep_merge(DEFAULT_CONFIG["notify"]["qwenpaw"], notify.get("qwenpaw") or {})
-    for k in ("agentId", "channel", "targetUser", "targetSession"):
-        q[k] = str(q.get(k) or "").strip()
-    notify["qwenpaw"] = q
+
     cfg["notify"] = notify
     return cfg
 
@@ -120,6 +116,7 @@ def set_url(url):
     if not (url.startswith("http://") or url.startswith("https://")):
         print("ERROR|网址必须以 http:// 或 https:// 开头")
         return 2
+
     cfg = load_config()
     cfg["url"] = url
     save(CONFIG, cfg)
@@ -133,9 +130,11 @@ def set_threshold(value):
     except Exception:
         print("ERROR|失败阈值必须是整数")
         return 2
+
     if not 1 <= n <= 20:
         print("ERROR|失败阈值范围是 1-20")
         return 2
+
     cfg = load_config()
     cfg["failThreshold"] = n
     save(CONFIG, cfg)
@@ -149,9 +148,11 @@ def set_timeout(value):
     except Exception:
         print("ERROR|超时必须是整数秒")
         return 2
+
     if not 2 <= n <= 60:
         print("ERROR|超时范围是 2-60 秒")
         return 2
+
     cfg = load_config()
     cfg["timeout"] = n
     save(CONFIG, cfg)
@@ -165,9 +166,11 @@ def set_interval(value):
     except Exception:
         print("ERROR|检测间隔必须是整数秒")
         return 2
+
     if not 10 <= n <= 3600:
         print("ERROR|检测间隔范围是 10-3600 秒")
         return 2
+
     cfg = load_config()
     cfg["intervalSeconds"] = n
     save(CONFIG, cfg)
@@ -177,54 +180,51 @@ def set_interval(value):
 
 def set_command(argv):
     argv = [str(x) for x in argv]
+
     if not argv:
-        print("ERROR|必须提供直接发送消息的命令")
+        print("ERROR|必须提供消息发送命令")
         return 2
+
     if not any("{message}" in x for x in argv):
         print("ERROR|命令参数中必须包含 {message} 占位符")
         return 2
+
     cfg = load_config()
-    cfg["notify"]["mode"] = "command"
-    cfg["notify"]["command"] = argv
+    cfg["notify"] = {
+        "mode": "command",
+        "command": argv,
+        "webhookUrl": ""
+    }
     save(CONFIG, cfg)
-    print("SAVED|通用命令通知已配置")
+    print("SAVED|命令通知已配置")
     return 0
 
 
 def set_webhook(url):
     url = str(url or "").strip()
+
     if not (url.startswith("http://") or url.startswith("https://")):
         print("ERROR|Webhook 地址必须以 http:// 或 https:// 开头")
         return 2
+
     cfg = load_config()
-    cfg["notify"]["mode"] = "webhook"
-    cfg["notify"]["webhookUrl"] = url
+    cfg["notify"] = {
+        "mode": "webhook",
+        "command": [],
+        "webhookUrl": url
+    }
     save(CONFIG, cfg)
     print("SAVED|Webhook 通知已配置")
     return 0
 
 
-def set_qwenpaw(agent_id, channel, target_user, target_session):
-    values = [str(x or "").strip() for x in (agent_id, channel, target_user, target_session)]
-    if not all(values):
-        print("ERROR|agent-id、channel、target-user、target-session 都不能为空")
-        return 2
-    cfg = load_config()
-    cfg["notify"]["mode"] = "qwenpaw"
-    cfg["notify"]["qwenpaw"] = {
-        "agentId": values[0],
-        "channel": values[1],
-        "targetUser": values[2],
-        "targetSession": values[3],
-    }
-    save(CONFIG, cfg)
-    print("SAVED|QwenPaw 直推适配器已配置")
-    return 0
-
-
 def disable_notify():
     cfg = load_config()
-    cfg["notify"]["mode"] = "none"
+    cfg["notify"] = {
+        "mode": "none",
+        "command": [],
+        "webhookUrl": ""
+    }
     save(CONFIG, cfg)
     print("SAVED|通知已关闭")
     return 0
@@ -234,12 +234,13 @@ def fetch_alive(url, timeout):
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "XianBao-Watch/3.0",
+            "User-Agent": "XianBao-Watch/4.0",
             "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
+            "Pragma": "no-cache"
         },
-        method="GET",
+        method="GET"
     )
+
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         code = getattr(resp, "status", 200)
         if code != 200:
@@ -267,18 +268,28 @@ def perform_check():
     try:
         seq, remote_time = fetch_alive(cfg["url"], cfg["timeout"])
         was_alerting = state["alerting"]
+
         state.update({
             "failures": 0,
             "alerting": False,
             "lastSuccess": remote_time or now_cn(),
             "lastSeq": seq,
-            "lastError": "",
+            "lastError": ""
         })
+
         if was_alerting:
             state["pendingEvent"] = "RECOVERED"
-            state["pendingMessage"] = f"XianBao-Lite 已恢复\n恢复时间：{state['lastSuccess']}"
+            state["pendingMessage"] = (
+                f"XianBao-Lite 已恢复\n"
+                f"恢复时间：{state['lastSuccess']}"
+            )
+
         save(STATE, state)
-        return ("RECOVERED", state["pendingMessage"], 0) if was_alerting else ("OK", "", 0)
+
+        if was_alerting:
+            return "RECOVERED", state["pendingMessage"], 0
+
+        return "OK", "", 0
 
     except Exception as exc:
         state["failures"] = int(state.get("failures") or 0) + 1
@@ -304,12 +315,16 @@ def perform_check():
 
 def run_command_notify(message, command):
     if not command:
-        return False, "通用命令为空"
+        return False, "消息发送命令为空"
+
     argv = [str(x).replace("{message}", message) for x in command]
     exe = shutil.which(argv[0]) or (argv[0] if Path(argv[0]).exists() else None)
+
     if not exe:
         return False, f"找不到通知命令：{argv[0]}"
+
     argv[0] = exe
+
     try:
         cp = subprocess.run(
             argv,
@@ -318,12 +333,14 @@ def run_command_notify(message, command):
             stderr=subprocess.PIPE,
             text=True,
             timeout=30,
-            check=False,
+            check=False
         )
     except Exception as exc:
         return False, str(exc)
+
     if cp.returncode == 0:
         return True, ""
+
     detail = (cp.stderr or cp.stdout or f"退出码 {cp.returncode}").strip()
     return False, detail[:1000]
 
@@ -331,13 +348,18 @@ def run_command_notify(message, command):
 def run_webhook_notify(message, url):
     if not url:
         return False, "Webhook 地址为空"
+
     body = json.dumps({"text": message}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json; charset=utf-8", "User-Agent": "XianBao-Watch/3.0"},
-        method="POST",
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "XianBao-Watch/4.0"
+        },
+        method="POST"
     )
+
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             code = getattr(resp, "status", 200)
@@ -348,95 +370,92 @@ def run_webhook_notify(message, url):
         return False, str(exc)
 
 
-def run_qwenpaw_notify(message, q):
-    exe = shutil.which("qwenpaw")
-    if not exe:
-        return False, "找不到 qwenpaw 命令"
-    required = ("agentId", "channel", "targetUser", "targetSession")
-    if any(not str(q.get(k) or "").strip() for k in required):
-        return False, "QwenPaw 通知参数不完整"
-    argv = [
-        exe, "channels", "send",
-        "--agent-id", q["agentId"],
-        "--channel", q["channel"],
-        "--target-user", q["targetUser"],
-        "--target-session", q["targetSession"],
-        "--text", message,
-    ]
-    return run_command_notify(message, argv)
-
-
 def notify_message(message):
     notify = load_config()["notify"]
     mode = notify.get("mode")
+
     if mode == "command":
         return run_command_notify(message, notify.get("command") or [])
+
     if mode == "webhook":
         return run_webhook_notify(message, notify.get("webhookUrl") or "")
-    if mode == "qwenpaw":
-        return run_qwenpaw_notify(message, notify.get("qwenpaw") or {})
-    return False, "尚未配置通知适配器"
+
+    return False, "尚未配置消息通知接口"
 
 
 def flush_pending_notification():
     state = load_state()
     event = str(state.get("pendingEvent") or "")
     message = str(state.get("pendingMessage") or "")
+
     if not event or not message:
         return True, ""
+
     ok, error = notify_message(message)
     state = load_state()
+
     if ok:
         state["pendingEvent"] = ""
         state["pendingMessage"] = ""
         state["lastNotifyError"] = ""
     else:
         state["lastNotifyError"] = str(error or "")
+
     save(STATE, state)
     return ok, error
 
 
 def check_command():
     event, message, code = perform_check()
+
     if event == "OK":
         print("OK")
     else:
         print(f"{event}|{message.replace(chr(10), '|')}")
+
     return code
 
 
 def notify_test():
     ok, error = notify_message("XianBao-Watch 通知测试：消息出口工作正常。")
+
     state = load_state()
     state["lastNotifyError"] = "" if ok else str(error or "")
     save(STATE, state)
+
     if ok:
         print("SENT|测试消息已发送")
         return 0
+
     print(f"ERROR|测试消息发送失败|{error}")
     return 2
 
 
 def daemon_loop():
     cfg = load_config()
+
     if not cfg["url"]:
         print(f"{now_cn()} ERROR 尚未配置检测地址", flush=True)
         return 2
 
     print(
-        f"{now_cn()} START interval={cfg['intervalSeconds']}s threshold={cfg['failThreshold']} notify={cfg['notify']['mode']}",
-        flush=True,
+        f"{now_cn()} START interval={cfg['intervalSeconds']}s "
+        f"threshold={cfg['failThreshold']} notify={cfg['notify']['mode']}",
+        flush=True
     )
 
     while True:
         event, message, _ = perform_check()
+
         if event == "ERROR":
             print(f"{now_cn()} ERROR {message}", flush=True)
 
         state = load_state()
+
         if state.get("pendingEvent"):
             pending = state.get("pendingEvent")
             ok, error = flush_pending_notification()
+
             if ok:
                 print(f"{now_cn()} {pending} notification_sent", flush=True)
             else:
@@ -455,6 +474,7 @@ def read_pid():
 def pid_running(pid):
     if not pid or pid <= 0:
         return False
+
     try:
         os.kill(pid, 0)
         return True
@@ -464,19 +484,23 @@ def pid_running(pid):
 
 def start_daemon():
     pid = read_pid()
+
     if pid_running(pid):
         print(f"RUNNING|XianBao-Watch 已在后台运行|PID={pid}")
         return 0
 
     cfg = load_config()
+
     if not cfg["url"]:
         print("ERROR|尚未配置检测地址，请先执行 set-url")
         return 2
+
     if cfg["notify"].get("mode") == "none":
-        print("ERROR|尚未配置消息通知接口，请先配置 Agent 的直接消息出口")
+        print("ERROR|尚未配置消息通知接口")
         return 2
 
     log = open(LOG_FILE, "a", encoding="utf-8")
+
     try:
         proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "_daemon"],
@@ -484,18 +508,20 @@ def start_daemon():
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=True
         )
     finally:
         log.close()
 
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
     time.sleep(0.4)
+
     if not pid_running(proc.pid):
         try:
             PID_FILE.unlink()
         except Exception:
             pass
+
         print("ERROR|后台监控启动失败，请查看 xianbao_watch.log")
         return 2
 
@@ -505,11 +531,13 @@ def start_daemon():
 
 def stop_daemon():
     pid = read_pid()
+
     if not pid_running(pid):
         try:
             PID_FILE.unlink()
         except Exception:
             pass
+
         print("STOPPED|当前未运行")
         return 0
 
@@ -528,21 +556,24 @@ def stop_daemon():
         PID_FILE.unlink()
     except Exception:
         pass
+
     print("STOPPED|后台监控已停止")
     return 0
 
 
 def show():
     pid = read_pid()
+
     print(json.dumps({
         "config": load_config(),
         "state": load_state(),
         "daemon": {
             "running": pid_running(pid),
-            "pid": pid if pid_running(pid) else None,
+            "pid": pid if pid_running(pid) else None
         },
-        "logFile": str(LOG_FILE),
+        "logFile": str(LOG_FILE)
     }, ensure_ascii=False, indent=2))
+
     return 0
 
 
@@ -555,19 +586,13 @@ def reset():
 def help_text():
     print("""XianBao Watch
 
-平台无关的 XianBao-Lite 外部存活监控。
-后台脚本自己定时检测，不使用 Agent Heartbeat，不让大模型参与常规巡检。
-
-通知适配方式：
-  command  任意平台的“直接发消息命令”，用 {message} 作为消息占位符
-  webhook  任意可接收 JSON {"text": "..."} 的 HTTP 接口
-  qwenpaw  QwenPaw 现成适配器（可选，不是项目依赖）
+后台脚本自行检测 XianBao-Lite 存活状态。
+通知接口与具体平台无关。
 
 命令：
   python xianbao_watch.py set-url "https://.../alive/..."
   python xianbao_watch.py set-command <命令> <参数...> "{message}"
   python xianbao_watch.py set-webhook "https://..."
-  python xianbao_watch.py set-qwenpaw <agent-id> <channel> <target-user> <target-session>
   python xianbao_watch.py disable-notify
   python xianbao_watch.py set-interval 60
   python xianbao_watch.py set-threshold 3
@@ -576,9 +601,10 @@ def help_text():
   python xianbao_watch.py check
   python xianbao_watch.py start
   python xianbao_watch.py stop
-  python xianbao_watch.py show
+  python xianbao_watch.py status
   python xianbao_watch.py reset
 """)
+
     return 0
 
 
@@ -616,8 +642,6 @@ def main():
         return set_webhook(sys.argv[2])
     if cmd == "set-command" and len(sys.argv) >= 3:
         return set_command(sys.argv[2:])
-    if cmd == "set-qwenpaw" and len(sys.argv) >= 6:
-        return set_qwenpaw(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 
     return help_text()
 
