@@ -10,6 +10,7 @@ import sys
 import time
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -29,7 +30,15 @@ DEFAULT_CONFIG = {
     "notify": {
         "mode": "none",
         "command": [],
-        "webhookUrl": ""
+        "webhookUrl": "",
+        "wecomApp": {
+            "enabled": False,
+            "corpId": "",
+            "agentId": "",
+            "secret": "",
+            "toUser": "@all",
+            "apiBase": "https://qyapi.weixin.qq.com"
+        }
     }
 }
 
@@ -101,6 +110,17 @@ def load_config():
     if not isinstance(notify.get("command"), list):
         notify["command"] = []
     notify["command"] = [str(x) for x in notify["command"]]
+
+    wecom = deep_merge(DEFAULT_CONFIG["notify"]["wecomApp"], notify.get("wecomApp") or {})
+    wecom["enabled"] = bool(wecom.get("enabled"))
+    for key in ("corpId", "agentId", "secret", "toUser", "apiBase"):
+        wecom[key] = str(wecom.get(key) or "").strip()
+    if not wecom["toUser"]:
+        wecom["toUser"] = "@all"
+    if not wecom["apiBase"]:
+        wecom["apiBase"] = "https://qyapi.weixin.qq.com"
+    wecom["apiBase"] = wecom["apiBase"].rstrip("/")
+    notify["wecomApp"] = wecom
 
     cfg["notify"] = notify
     return cfg
@@ -192,11 +212,9 @@ def set_command(argv):
         return 2
 
     cfg = load_config()
-    cfg["notify"] = {
-        "mode": "command",
-        "command": argv,
-        "webhookUrl": ""
-    }
+    cfg["notify"]["mode"] = "command"
+    cfg["notify"]["command"] = argv
+    cfg["notify"]["webhookUrl"] = ""
     save(CONFIG, cfg)
     print("SAVED|命令通知已配置")
     return 0
@@ -210,25 +228,58 @@ def set_webhook(url):
         return 2
 
     cfg = load_config()
-    cfg["notify"] = {
-        "mode": "webhook",
-        "command": [],
-        "webhookUrl": url
-    }
+    cfg["notify"]["mode"] = "webhook"
+    cfg["notify"]["command"] = []
+    cfg["notify"]["webhookUrl"] = url
     save(CONFIG, cfg)
     print("SAVED|Webhook 通知已配置")
     return 0
 
 
-def disable_notify():
+def set_wecom_app(corp_id, agent_id, secret, to_user="@all"):
+    corp_id = str(corp_id or "").strip()
+    agent_id = str(agent_id or "").strip()
+    secret = str(secret or "").strip()
+    to_user = str(to_user or "@all").strip() or "@all"
+
+    if not corp_id or not agent_id or not secret:
+        print("ERROR|企业ID、应用AgentID、应用Secret 都不能为空")
+        return 2
+
+    if not agent_id.isdigit():
+        print("ERROR|应用AgentID 应该是一串数字")
+        return 2
+
     cfg = load_config()
-    cfg["notify"] = {
-        "mode": "none",
-        "command": [],
-        "webhookUrl": ""
+    cfg["notify"]["wecomApp"] = {
+        "enabled": True,
+        "corpId": corp_id,
+        "agentId": agent_id,
+        "secret": secret,
+        "toUser": to_user,
+        "apiBase": cfg["notify"]["wecomApp"].get("apiBase") or "https://qyapi.weixin.qq.com"
     }
     save(CONFIG, cfg)
-    print("SAVED|通知已关闭")
+    print("SAVED|企业微信应用通知已配置")
+    return 0
+
+
+def disable_wecom_app():
+    cfg = load_config()
+    cfg["notify"]["wecomApp"]["enabled"] = False
+    save(CONFIG, cfg)
+    print("SAVED|企业微信应用通知已关闭")
+    return 0
+
+
+def disable_notify():
+    cfg = load_config()
+    cfg["notify"]["mode"] = "none"
+    cfg["notify"]["command"] = []
+    cfg["notify"]["webhookUrl"] = ""
+    cfg["notify"]["wecomApp"]["enabled"] = False
+    save(CONFIG, cfg)
+    print("SAVED|所有通知已关闭")
     return 0
 
 
@@ -432,17 +483,119 @@ def run_webhook_notify(message, url):
         return False, str(exc)
 
 
+def request_json(url, payload=None, timeout=15):
+    data = None
+    method = "GET"
+
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        method = "POST"
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "User-Agent": "XianBao-Watch/4.1"
+        },
+        method=method
+    )
+
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read(65536)
+
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError("接口返回内容不是有效 JSON") from exc
+
+
+def run_wecom_app_notify(message, config):
+    if not config.get("enabled"):
+        return False, "企业微信应用未启用"
+
+    corp_id = str(config.get("corpId") or "").strip()
+    agent_id = str(config.get("agentId") or "").strip()
+    secret = str(config.get("secret") or "").strip()
+    to_user = str(config.get("toUser") or "@all").strip() or "@all"
+    api_base = str(config.get("apiBase") or "https://qyapi.weixin.qq.com").strip().rstrip("/")
+
+    if not corp_id or not agent_id or not secret:
+        return False, "企业微信应用参数不完整"
+
+    try:
+        token_url = (
+            f"{api_base}/cgi-bin/gettoken?"
+            + urllib.parse.urlencode({"corpid": corp_id, "corpsecret": secret})
+        )
+        token_data = request_json(token_url, timeout=15)
+
+        if int(token_data.get("errcode") or 0) != 0:
+            return False, (
+                f"企业微信获取凭证失败："
+                f"{token_data.get('errcode')} {token_data.get('errmsg') or ''}"
+            ).strip()
+
+        access_token = str(token_data.get("access_token") or "").strip()
+        if not access_token:
+            return False, "企业微信获取凭证失败：没有返回 access_token"
+
+        send_url = (
+            f"{api_base}/cgi-bin/message/send?"
+            + urllib.parse.urlencode({"access_token": access_token})
+        )
+        agent_value = int(agent_id) if agent_id.isdigit() else agent_id
+        send_data = request_json(
+            send_url,
+            {
+                "touser": to_user,
+                "agentid": agent_value,
+                "msgtype": "text",
+                "text": {"content": message},
+                "safe": 0
+            },
+            timeout=15
+        )
+
+        if int(send_data.get("errcode") or 0) == 0:
+            return True, ""
+
+        return False, (
+            f"企业微信发送失败："
+            f"{send_data.get('errcode')} {send_data.get('errmsg') or ''}"
+        ).strip()
+
+    except Exception as exc:
+        return False, f"企业微信接口异常：{friendly_error(exc)}"
+
+
 def notify_message(message):
     notify = load_config()["notify"]
+    results = []
+
     mode = notify.get("mode")
-
     if mode == "command":
-        return run_command_notify(message, notify.get("command") or [])
+        ok, detail = run_command_notify(message, notify.get("command") or [])
+        results.append(("原消息出口", ok, detail))
+    elif mode == "webhook":
+        ok, detail = run_webhook_notify(message, notify.get("webhookUrl") or "")
+        results.append(("Webhook", ok, detail))
 
-    if mode == "webhook":
-        return run_webhook_notify(message, notify.get("webhookUrl") or "")
+    wecom = notify.get("wecomApp") or {}
+    if wecom.get("enabled"):
+        ok, detail = run_wecom_app_notify(message, wecom)
+        results.append(("企业微信应用", ok, detail))
 
-    return False, "尚未配置消息通知接口"
+    if not results:
+        return False, "尚未配置消息通知接口"
+
+    any_success = any(ok for _, ok, _ in results)
+    summary = "；".join(
+        f"{name}:{'成功' if ok else '失败'}"
+        + (f"({detail})" if detail else "")
+        for name, ok, detail in results
+    )
+    return any_success, summary
 
 
 def flush_pending_notification():
@@ -459,7 +612,7 @@ def flush_pending_notification():
     if ok:
         state["pendingEvent"] = ""
         state["pendingMessage"] = ""
-        state["lastNotifyError"] = ""
+        state["lastNotifyError"] = str(error or "") if "失败" in str(error or "") else ""
     else:
         state["lastNotifyError"] = str(error or "")
 
@@ -486,7 +639,7 @@ def notify_test():
     save(STATE, state)
 
     if ok:
-        print("SENT|测试消息已发送")
+        print(f"SENT|测试消息已发送|{error}")
         return 0
 
     print(f"ERROR|测试消息发送失败|{error}")
@@ -557,7 +710,8 @@ def start_daemon():
         print("ERROR|尚未配置检测地址，请先执行 set-url")
         return 2
 
-    if cfg["notify"].get("mode") == "none":
+    wecom_enabled = bool(cfg["notify"].get("wecomApp", {}).get("enabled"))
+    if cfg["notify"].get("mode") == "none" and not wecom_enabled:
         print("ERROR|尚未配置消息通知接口")
         return 2
 
@@ -655,6 +809,8 @@ def help_text():
   python xianbao_watch.py set-url "https://.../alive/..."
   python xianbao_watch.py set-command <命令> <参数...> "{message}"
   python xianbao_watch.py set-webhook "https://..."
+  python xianbao_watch.py set-wecom-app <企业ID> <应用AgentID> <应用Secret> [接收成员]
+  python xianbao_watch.py disable-wecom-app
   python xianbao_watch.py disable-notify
   python xianbao_watch.py set-interval 60
   python xianbao_watch.py set-threshold 3
@@ -702,6 +858,11 @@ def main():
         return set_interval(sys.argv[2])
     if cmd == "set-webhook" and len(sys.argv) >= 3:
         return set_webhook(sys.argv[2])
+    if cmd == "set-wecom-app" and len(sys.argv) >= 5:
+        to_user = sys.argv[5] if len(sys.argv) >= 6 else "@all"
+        return set_wecom_app(sys.argv[2], sys.argv[3], sys.argv[4], to_user)
+    if cmd == "disable-wecom-app":
+        return disable_wecom_app()
     if cmd == "set-command" and len(sys.argv) >= 3:
         return set_command(sys.argv[2:])
 
