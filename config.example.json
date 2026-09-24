@@ -6,6 +6,14 @@
   "notify": {
     "mode": "none",
     "command": [],
-    "webhookUrl": ""
+    "webhookUrl": "",
+    "wecomApp": {
+      "enabled": false,
+      "corpId": "",
+      "agentId": "",
+      "secret": "",
+      "toUser": "@all",
+      "apiBase": "https://qyapi.weixin.qq.com"
+    }
   }
 }
